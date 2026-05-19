@@ -236,10 +236,12 @@ def _navigate_to_right_panel(wechat_window: auto.WindowControl) -> Optional[auto
         children = wechat_window.GetChildren()
         if len(children) > 1:
             main_pane = children[1]
-            main_content = main_pane.GetChildren()[0]
-            main_kids = main_content.GetChildren()
-            if len(main_kids) > 2:
-                return main_kids[2]
+            main_pane_children = main_pane.GetChildren()
+            if len(main_pane_children) > 0:
+                main_content = main_pane_children[0]
+                main_kids = main_content.GetChildren()
+                if len(main_kids) > 2:
+                    return main_kids[2]
 
         return None
     except Exception:
@@ -355,6 +357,8 @@ def _navigate_to_msg_input_area(wechat_window: auto.WindowControl) -> Optional[l
 
         return None
 
+        return None
+
     except Exception:
         return None
 
@@ -427,6 +431,41 @@ def get_chat_input_edit(wechat_window: auto.WindowControl) -> Optional[auto.Edit
 
         return None
 
+    except Exception:
+        return None
+
+
+def get_active_chat_name(wechat_window: auto.WindowControl) -> Optional[str]:
+    """
+    获取当前激活的聊天窗口的联系人名称
+
+    通过查找右侧面板顶部区域的控件来确认当前聊天对象。
+    微信 PC 版在右侧面板顶部会显示当前联系人的名称，
+    该名称通常出现在 EditControl 的 Name 属性中（输入框的 Name 即为联系人名），
+    或者出现在特定的 Text 控件中。
+
+    Args:
+        wechat_window: 微信主窗口控件
+
+    Returns:
+        当前聊天窗口的联系人名称，获取失败返回 None
+    """
+    try:
+        # 方法1：通过输入框的 Name 属性获取（输入框 Name 通常为联系人名称）
+        right_panel = _navigate_to_right_panel(wechat_window)
+        if right_panel:
+            edit = _find_edit_control(right_panel, max_depth=15)
+            if edit and edit.Name and edit.Name.strip():
+                return edit.Name.strip()
+
+        # 方法2：直接在微信窗口中查找 EditControl（回退方案）
+        edit = wechat_window.EditControl(searchDepth=8)
+        if edit.Exists(maxSearchSeconds=0.3):
+            name = edit.Name
+            if name and name.strip():
+                return name.strip()
+
+        return None
     except Exception:
         return None
 

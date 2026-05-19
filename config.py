@@ -5,7 +5,7 @@
 import json
 import os
 from dataclasses import dataclass, field, asdict
-from typing import List, Optional
+from typing import List, Optional, Union
 from datetime import datetime
 
 
@@ -22,6 +22,41 @@ class TimeRange:
             datetime.strptime(self.end, "%H:%M")
         except ValueError:
             raise ValueError(f"时间格式错误，应为 HH:MM，当前值: {self.start} - {self.end}")
+
+
+@dataclass
+class ContactConfig:
+    """联系人配置数据类
+
+    每个联系人可以有自己的个性化配置，覆盖全局默认行为。
+    未设置的字段使用全局默认值。
+    """
+    name: str  # 微信联系人名称
+    relation: str = ""  # 与对方的关系描述（如"男朋友"、"导师"），留空则使用默认语气
+
+    # 个性化配置字典
+    # 支持以下键（未设置的键使用全局默认行为）：
+    #   silent_before : str  - 在此时间点之前保持静默（如"22:30"），空字符串=不限制
+    #   custom_reply  : str  - 自定义回复内容（首次回复发完图片后发送此内容，不走 LLM）
+    #   sticker_path  : str  - 该联系人专属表情包路径（覆盖全局 sticker_path）
+    #   reply_message : str  - 该联系人专属预设消息（覆盖全局 reply_message）
+    personalization: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        """确保 name 不为空"""
+        if not self.name.strip():
+            raise ValueError("联系人名称不能为空")
+        # 验证 personalization 中的 silent_before 格式
+        silent = self.personalization.get("silent_before", "")
+        if silent:
+            try:
+                from datetime import datetime
+                datetime.strptime(silent, "%H:%M")
+            except ValueError:
+                raise ValueError(
+                    f"联系人 '{self.name}' 的 personalization.silent_before 时间格式错误，"
+                    f"应为 HH:MM，当前值: {silent}"
+                )
 
 
 @dataclass
@@ -43,7 +78,7 @@ class Config:
     """程序配置数据类"""
     enabled: bool = True
     check_interval: float = 2.0  # 消息检测间隔（秒）
-    contacts: List[str] = field(default_factory=lambda: ["文件传输助手"])
+    contacts: List[ContactConfig] = field(default_factory=lambda: [ContactConfig(name="文件传输助手")])
     time_ranges: List[dict] = field(default_factory=lambda: [
         {"start": "09:00", "end": "12:00"},
         {"start": "13:00", "end": "18:00"},
@@ -54,11 +89,55 @@ class Config:
     )
     log_file: str = "reply_log.txt"
     llm: LLMConfig = field(default_factory=LLMConfig)  # 大模型配置
+    sticker_path: str = ""  # 首次回复时发送的表情包/GIF 图片路径（空字符串表示不发送）
 
 
 def get_default_config_path() -> str:
     """获取默认配置文件路径（与脚本同目录）"""
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+
+
+def _parse_contacts(contacts_data: list) -> List[ContactConfig]:
+    """
+    解析联系人配置，支持多种格式
+
+    格式1（旧）: ["hane", "何璇"]
+    格式2（旧）: [{"name": "hane", "relation": "朋友"}, ...]
+    格式3（新）: [{"name": "何璇", "personalization": {"silent_before": "22:30", ...}}, ...]
+    格式4（兼容）: [{"name": "何璇", "silent_before": "22:30", "custom_reply": "..."}, ...]
+
+    Args:
+        contacts_data: 原始联系人数据
+
+    Returns:
+        ContactConfig 列表
+    """
+    result = []
+    for item in contacts_data:
+        if isinstance(item, str):
+            # 格式1：纯字符串
+            result.append(ContactConfig(name=item, relation=""))
+        elif isinstance(item, dict):
+            name = item.get("name", "")
+            relation = item.get("relation", "")
+
+            # 收集 personalization 字典
+            # 优先使用显式的 personalization 字段
+            personalization = item.get("personalization", {})
+
+            # 兼容旧格式：如果 silent_before/custom_reply 直接在联系人对象中，
+            # 但不在 personalization 里，则迁移过去
+            if "silent_before" in item and "silent_before" not in personalization:
+                personalization["silent_before"] = item["silent_before"]
+            if "custom_reply" in item and "custom_reply" not in personalization:
+                personalization["custom_reply"] = item["custom_reply"]
+
+            result.append(ContactConfig(
+                name=name,
+                relation=relation,
+                personalization=personalization,
+            ))
+    return result
 
 
 def load_config(config_path: Optional[str] = None) -> Config:
@@ -98,10 +177,14 @@ def load_config(config_path: Optional[str] = None) -> Config:
             context_window=llm_data.get("context_window", 10),
         )
 
+        # 解析联系人（兼容新旧格式）
+        raw_contacts = data.get("contacts", ["文件传输助手"])
+        contacts = _parse_contacts(raw_contacts)
+
         config = Config(
             enabled=data.get("enabled", True),
             check_interval=data.get("check_interval", 2.0),
-            contacts=data.get("contacts", ["文件传输助手"]),
+            contacts=contacts,
             time_ranges=data.get("time_ranges", [
                 {"start": "09:00", "end": "12:00"},
                 {"start": "13:00", "end": "18:00"},
@@ -109,6 +192,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
             reply_message=data.get("reply_message", ""),
             log_file=data.get("log_file", "reply_log.txt"),
             llm=llm_config,
+            sticker_path=data.get("sticker_path", ""),
         )
         print(f"[配置] 配置文件加载成功: {config_path}")
         return config
@@ -160,6 +244,10 @@ def validate_config(config: Config) -> List[str]:
 
     if not config.contacts:
         errors.append("联系人列表不能为空")
+    else:
+        for i, c in enumerate(config.contacts):
+            if not c.name.strip():
+                errors.append(f"联系人 {i+1}: 名称不能为空")
 
     if not config.reply_message.strip():
         errors.append("回复消息不能为空")

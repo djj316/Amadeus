@@ -55,18 +55,32 @@ pip install -r requirements.txt
 #    复制 .env.example 为 .env，然后编辑 .env 填入你的 API Key
 copy .env.example .env
 #    然后用文本编辑器打开 .env，将对应提供商的 API Key 填入
+
+# 4. 配置联系人等个性化信息
+#    复制 config.example.json 为 config.json，然后编辑
+copy config.example.json config.json
 ```
 
 ## 配置
 
-编辑 [`config.json`](config.json) 文件：
+> ⚠️ **隐私保护**：`config.json` 已加入 `.gitignore`，不会上传到 GitHub。
+> 请复制 [`config.example.json`](config.example.json) 为 `config.json`，然后编辑你的个性化配置。
+
+编辑 [`config.json`](config.json) 文件（基于 [`config.example.json`](config.example.json)）：
 
 ```json
 {
   "enabled": true,
   "check_interval": 2.0,
   "contacts": [
-    "联系人A"
+    {
+      "name": "联系人A",
+      "relation": "朋友"
+    },
+    {
+      "name": "联系人B",
+      "relation": ""
+    }
   ],
   "time_ranges": [
     { "start": "09:00", "end": "12:00" },
@@ -74,6 +88,7 @@ copy .env.example .env
   ],
   "reply_message": "您好，我现在正在忙，暂时无法回复消息。\n如有急事请电话联系我，谢谢！",
   "log_file": "reply_log.txt",
+  "sticker_path": "stickers/your_sticker.gif",
   "llm": {
     "enabled": true,
     "provider": "doubao",
@@ -94,10 +109,11 @@ copy .env.example .env
 |--------|------|--------|
 | `enabled` | 总开关 | `true` |
 | `check_interval` | 检测间隔（秒） | `2.0` |
-| `contacts` | 需要监控的联系人列表（使用微信备注名） | `["文件传输助手"]` |
+| `contacts` | 需要监控的联系人列表，每个对象包含 `name`（微信备注名）和 `relation`（关系描述，可选） | `[{"name": "文件传输助手", "relation": ""}]` |
 | `time_ranges` | 启用自动回复的时间段 | `09:00-12:00, 13:00-18:00` |
 | `reply_message` | 预设回复消息（大模型不可用时的降级方案） | 见上 |
 | `log_file` | 回复日志文件路径 | `reply_log.txt` |
+| `sticker_path` | 首次回复时发送的表情包/GIF 图片路径（空字符串禁用） | `""` |
 
 ### LLM 配置项说明
 
@@ -110,6 +126,22 @@ copy .env.example .env
 | `llm.max_tokens` | 最大生成 token 数 | `500` |
 | `llm.temperature` | 温度参数（0-1，越高越随机） | `0.8` |
 | `llm.character` | 角色名称（当前仅支持 `kurisu`） | `kurisu` |
+
+### 联系人个性化配置
+
+你可以为每个联系人设置 `relation`（关系描述），让 LLM 在保持 Kurisu 性格的基础上，根据对象关系微调语气：
+
+```json
+"contacts": [
+    {"name": "小明", "relation": "男朋友"},
+    {"name": "张老师", "relation": "导师"},
+    {"name": "李四", "relation": ""}
+]
+```
+
+- `relation` 留空则使用默认语气
+- 支持任意关系描述，LLM 会自动适配
+- 整体性格始终是 Kurisu，不会 OOC
 | `llm.enable_context` | 是否启用对话上下文记忆 | `true` |
 | `llm.context_window` | 上下文记忆轮数 | `10` |
 

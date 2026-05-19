@@ -188,6 +188,7 @@ class LLMClient:
         self,
         contact_name: str,
         user_message: str,
+        contact_relation: str = "",
     ) -> Tuple[bool, str]:
         """
         发送消息并获取大模型回复
@@ -195,6 +196,7 @@ class LLMClient:
         Args:
             contact_name: 联系人名称（用于区分对话上下文）
             user_message: 用户发送的消息内容
+            contact_relation: 与对方的关系描述（如"男朋友"），用于个性化回复
 
         Returns:
             (是否成功, 回复文本)
@@ -204,7 +206,7 @@ class LLMClient:
 
         try:
             # 构建消息列表
-            messages = self._build_messages(contact_name, user_message)
+            messages = self._build_messages(contact_name, user_message, contact_relation)
 
             # 调用 API
             response = self._client.chat.completions.create(
@@ -242,20 +244,38 @@ class LLMClient:
         self,
         contact_name: str,
         user_message: str,
+        contact_relation: str = "",
     ) -> List[Dict[str, str]]:
         """
         构建发送给 API 的消息列表
 
-        包含系统提示词、对话历史和当前用户消息。
+        包含系统提示词、当前时间信息、联系人关系描述、对话历史和当前用户消息。
 
         Args:
             contact_name: 联系人名称
             user_message: 用户消息
+            contact_relation: 与对方的关系描述（如"男朋友"），用于个性化回复
 
         Returns:
             消息列表
         """
+        from datetime import datetime
+
         messages = [{"role": "system", "content": self.system_prompt}]
+
+        # 添加当前时间信息，让 LLM 根据时间调整回复风格
+        now = datetime.now()
+        time_info = f"[当前时间: {now.strftime('%Y-%m-%d %H:%M')}]"
+        messages.append({"role": "system", "content": time_info})
+
+        # 添加联系人关系描述，让 LLM 根据对象关系调整语气
+        if contact_relation:
+            relation_info = (
+                f"[对话对象: {contact_name}，对方是你的{contact_relation}。"
+                f"请在保持你性格特点的前提下，根据与对方的关系适当调整语气。"
+                f"对方是{contact_relation}，所以可以更{'亲切' if '男' in contact_relation or '女' in contact_relation else '亲近'}一些。]"
+            )
+            messages.append({"role": "system", "content": relation_info})
 
         # 添加上下文历史
         if self.enable_context and contact_name in self._conversations:

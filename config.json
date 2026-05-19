@@ -2,23 +2,39 @@
   "enabled": true,
   "check_interval": 2.0,
   "contacts": [
-    "文件传输助手"
+    {
+      "name": "hane",
+      "relation": ""
+    },
+    {
+      "name": "文件传输助手",
+      "relation": ""
+    },
+    {
+      "name": "何璇",
+      "relation": "",
+      "personalization": {
+        "silent_before": "22:30",
+        "custom_reply": "好了，快把那个该死的终端设备关掉，立刻去睡觉。这是……这是实验室成员004号的强制命令！"
+      }
+    }
   ],
   "time_ranges": [
     {
-      "start": "09:00",
-      "end": "12:00"
+      "start": "22:30",
+      "end": "23:59"
     },
     {
-      "start": "13:00",
-      "end": "18:00"
+      "start": "00:00",
+      "end": "23:59"
     }
   ],
-  "reply_message": "您好，我现在正在忙，暂时无法回复消息。\n如有急事请电话联系我，谢谢！",
+  "reply_message": "好了，快把那个该死的终端设备关掉，立刻去睡觉。这是……这是实验室成员004号的强制命令！",
   "log_file": "reply_log.txt",
+  "sticker_path": "stickers/kurisu.jpg",
   "llm": {
     "enabled": true,
-    "provider": "doubao",
+    "provider": "qwen",
     "api_endpoint": "",
     "model": "",
     "max_tokens": 500,

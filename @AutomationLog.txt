@@ -1,1 +1,5 @@
 # uiautomation 调试日志 - 首次运行后将自动生成
+2026-05-19 23:56:24.217 wechat_monitor.py[170] activate_chat -> Can not move cursor. ListItemControl's BoundingRectangle is (0,0,0,0)[0x0]. SearchProperties: {ControlType: ListItemControl}
+2026-05-19 23:57:02.316 wechat_monitor.py[170] activate_chat -> Can not move cursor. ListItemControl's BoundingRectangle is (0,0,0,0)[0x0]. SearchProperties: {ControlType: ListItemControl}
+2026-05-19 23:57:14.814 wechat_monitor.py[170] activate_chat -> Can not move cursor. ListItemControl's BoundingRectangle is (0,0,0,0)[0x0]. SearchProperties: {ControlType: ListItemControl}
+2026-05-19 23:57:23.511 wechat_monitor.py[170] activate_chat -> Can not move cursor. ListItemControl's BoundingRectangle is (0,0,0,0)[0x0]. SearchProperties: {ControlType: ListItemControl}

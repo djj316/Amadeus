@@ -1,12 +1,15 @@
 # 环境变量文件（包含敏感 API Key）
 .env
 
+# 配置文件（包含联系人名称、关系等隐私信息）
+config.json
+
 # Python 缓存
 __pycache__/
 *.pyc
 *.pyo
 
-# 日志文件
+# 日志文件（可能包含对话内容）
 reply_log.txt
 AutomationLog.txt
 

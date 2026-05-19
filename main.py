@@ -238,7 +238,13 @@ def main():
 
     # 打印配置信息
     print(f"[主程序] 配置文件: {args.config or 'config.json'}")
-    print(f"[主程序] 监控联系人: {', '.join(config.contacts)}")
+    contact_display = []
+    for c in config.contacts:
+        if c.relation:
+            contact_display.append(f"{c.name}({c.relation})")
+        else:
+            contact_display.append(c.name)
+    print(f"[主程序] 监控联系人: {', '.join(contact_display)}")
     print(f"[主程序] 工作时间段: ", end="")
     for tr in config.time_ranges:
         print(f"{tr['start']}-{tr['end']}  ", end="")
@@ -304,7 +310,13 @@ def main():
     print("[主程序] 📊 运行统计")
     print(f"  总检查次数: {total_checks}")
     print(f"  总回复次数: {reply_count}")
-    print(f"  监控联系人: {', '.join(config.contacts)}")
+    contact_display = []
+    for c in config.contacts:
+        if c.relation:
+            contact_display.append(f"{c.name}({c.relation})")
+        else:
+            contact_display.append(c.name)
+    print(f"  监控联系人: {', '.join(contact_display)}")
     if _llm_client:
         print(f"  大模型状态: {_llm_client.get_status_string()}")
     print("[主程序] 👋 已退出")

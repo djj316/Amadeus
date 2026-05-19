@@ -1,0 +1,44 @@
+{
+  "enabled": true,
+  "check_interval": 2.0,
+  "contacts": [
+    {
+      "name": "联系人A",
+      "relation": "朋友"
+    },
+    {
+      "name": "联系人B",
+      "relation": "",
+      "personalization": {
+        "silent_before": "22:30",
+        "custom_reply": "好了，快把那个该死的终端设备关掉，立刻去睡觉。这是……这是实验室成员004号的强制命令！",
+        "sticker_path": "stickers/专属表情包.gif",
+        "reply_message": "该联系人的专属预设消息"
+      }
+    }
+  ],
+  "time_ranges": [
+    {
+      "start": "09:00",
+      "end": "12:00"
+    },
+    {
+      "start": "13:00",
+      "end": "18:00"
+    }
+  ],
+  "reply_message": "您好，我现在正在忙，暂时无法回复消息。\n如有急事请电话联系我，谢谢！",
+  "log_file": "reply_log.txt",
+  "sticker_path": "stickers/your_sticker.gif",
+  "llm": {
+    "enabled": true,
+    "provider": "qwen",
+    "api_endpoint": "",
+    "model": "",
+    "max_tokens": 500,
+    "temperature": 0.8,
+    "character": "kurisu",
+    "enable_context": true,
+    "context_window": 10
+  }
+}

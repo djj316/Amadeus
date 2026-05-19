@@ -6,20 +6,32 @@
 - 当检测到新消息时（消息内容变化），自动回复
 - 支持大模型生成回复（角色扮演）和预设消息两种模式
 - 对方每发一条消息，就回复一条
+- 每次会话首次回复时发送指定表情包/GIF
+- 支持按联系人关系个性化回复语气
+- 个性化配置通过 personalization 模块统一管理
 """
 
+import os
 import time
 import datetime
-from typing import List, Dict, Optional
+import subprocess
+from typing import List, Dict, Optional, Set
 
 import uiautomation as auto
 
-from config import Config
+from config import Config, ContactConfig
 from llm_client import LLMClient
+from personalization import (
+    is_silent_now,
+    get_custom_reply,
+    get_sticker_path,
+    get_reply_message,
+)
 from wechat_monitor import (
     find_wechat_window,
     activate_chat,
     get_chat_input_edit,
+    get_active_chat_name,
     bring_window_to_front,
     get_last_message_text,
 )
@@ -29,8 +41,130 @@ from wechat_monitor import (
 # 格式: {contact_name: last_message_text}
 _last_messages: Dict[str, str] = {}
 
+# 记录每个联系人是否已在本次会话中发送过首次回复
+# 格式: {contact_name: True/False}
+_first_reply_sent: Set[str] = set()
+
+# 记录每个联系人的 custom_reply 是否已在本次会话中执行过
+# 用于：custom_reply 仅首次触发时执行一次，后续走正常 LLM 流程
+_custom_reply_sent: Set[str] = set()
+
 # 大模型客户端实例（由主程序初始化）
 _llm_client: Optional[LLMClient] = None
+
+# 当前活跃的联系人（锁定模式）
+# 当检测到某个联系人发消息后，持续关注该联系人，直到其他联系人发消息才切换
+# 避免多个联系人同时发消息时频繁切换窗口导致发送失败
+_active_contact: Optional[str] = None
+
+
+def _input_via_clipboard(edit, text: str):
+    """
+    通过剪贴板 + Ctrl+V 向输入框输入文本
+
+    绕过 uiautomation 的 SendKeys 对 {} 等特殊字符的解析 bug。
+    使用 PowerShell 设置剪贴板，文本通过 stdin 传递避免转义问题。
+
+    Args:
+        edit: 输入框控件
+        text: 要输入的文本
+    """
+    try:
+        # 使用 PowerShell 从 stdin 读取文本并设置到剪贴板
+        ps = subprocess.Popen(
+            ["powershell", "-NoProfile", "-Command",
+             "$s=[Console]::In.ReadToEnd(); Set-Clipboard -Value $s"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True
+        )
+        ps.communicate(input=text, timeout=10)
+        # Ctrl+V 粘贴
+        edit.SendKeys("{Ctrl}v")
+        time.sleep(0.1)
+    except Exception:
+        # 回退：逐字符 SendKeys（慢但安全）
+        for char in text:
+            if char in ('{', '}', '^', '%', '~', '+'):
+                edit.SendKeys('{{}' + char + '{}}')
+            else:
+                edit.SendKeys(char)
+            time.sleep(0.005)
+
+
+def _send_sticker(wechat_window, sticker_path: str) -> bool:
+    """
+    通过剪贴板发送表情包/GIF 图片
+
+    将图片文件复制到剪贴板，然后粘贴到微信输入框并发送。
+    微信会自动将剪贴板中的图片识别为表情包/图片发送。
+
+    Args:
+        wechat_window: 微信主窗口控件
+        sticker_path: 图片文件路径
+
+    Returns:
+        是否发送成功
+    """
+    try:
+        if not os.path.isfile(sticker_path):
+            print(f"[表情包] 文件不存在: {sticker_path}")
+            return False
+
+        # 确保微信窗口在前台并激活聊天
+        if not bring_window_to_front(wechat_window):
+            return False
+        time.sleep(0.3)
+
+        # 获取输入框
+        edit = get_chat_input_edit(wechat_window)
+        if not edit:
+            print(f"[表情包] 无法获取聊天输入框")
+            return False
+
+        # 点击输入框获取焦点
+        edit.Click()
+        time.sleep(0.2)
+
+        # 使用 PowerShell 将图片文件复制到剪贴板
+        abs_path = os.path.abspath(sticker_path)
+        ps = subprocess.Popen(
+            ["powershell", "-NoProfile", "-Command",
+             f"Add-Type -AssemblyName System.Windows.Forms; "
+             f"$img = [System.Drawing.Image]::FromFile('{abs_path}'); "
+             f"[System.Windows.Forms.Clipboard]::SetImage($img); "
+             f"$img.Dispose()"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        _, err = ps.communicate(timeout=10)
+
+        if ps.returncode != 0:
+            # PowerShell 方式失败，回退到文件复制方式
+            print(f"[表情包] PowerShell 设置剪贴板失败，尝试文件复制方式: {err.strip()}")
+            ps2 = subprocess.Popen(
+                ["powershell", "-NoProfile", "-Command",
+                 f"Set-Clipboard -Path '{abs_path}'"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            )
+            ps2.communicate(timeout=10)
+
+        time.sleep(0.3)
+
+        # Ctrl+V 粘贴图片
+        edit.SendKeys("{Ctrl}v")
+        time.sleep(0.5)
+
+        # 按 Enter 发送
+        edit.SendKeys("{Enter}")
+        time.sleep(0.5)
+
+        print(f"[表情包] ✅ 已发送表情包: {sticker_path}")
+        return True
+
+    except Exception as e:
+        import traceback
+        print(f"[表情包] ❌ 发送表情包失败: {e}")
+        print(f"[表情包]    详细错误: {traceback.format_exc()}")
+        return False
 
 
 def set_llm_client(client: Optional[LLMClient]):
@@ -91,8 +225,9 @@ def should_reply(contact_name: str, config: Config) -> bool:
     if not is_in_time_range(config.time_ranges):
         return False
 
-    # 检查联系人是否在监控列表中
-    if contact_name not in config.contacts:
+    # 检查联系人是否在监控列表中（contacts 现在是 ContactConfig 列表）
+    contact_names = [c.name for c in config.contacts]
+    if contact_name not in contact_names:
         return False
 
     return True
@@ -103,6 +238,8 @@ def has_new_message(wechat_window, contact_name: str) -> bool:
     检测指定联系人是否有新消息
 
     通过对比当前最后一条消息与之前记录的最后一条消息来判断。
+    切换联系人后，会验证当前激活的聊天窗口确实是目标联系人，
+    避免因 UI 切换延迟导致读到上一个联系人的消息（误发）。
 
     Args:
         wechat_window: 微信主窗口控件
@@ -119,6 +256,23 @@ def has_new_message(wechat_window, contact_name: str) -> bool:
             return False
 
         time.sleep(0.3)
+
+        # === 验证当前激活的聊天窗口确实是目标联系人 ===
+        # 防止 UI 切换延迟导致读到上一个联系人的消息
+        active_name = get_active_chat_name(wechat_window)
+        if active_name is None:
+            # 无法获取当前聊天名称，可能是 UI 尚未切换完成
+            # 等待更长时间后重试一次
+            print(f"[检测] 无法确认当前聊天窗口，等待后重试 [{contact_name}]...")
+            time.sleep(0.5)
+            active_name = get_active_chat_name(wechat_window)
+
+        if active_name is not None and active_name != contact_name:
+            # 当前激活的聊天窗口不是目标联系人 → UI 切换失败或延迟
+            # 跳过本次检测，避免误读
+            print(f"[检测] ⚠️ 当前聊天窗口为 [{active_name}]，"
+                  f"非目标 [{contact_name}]，跳过本次检测")
+            return False
 
         # 获取当前最后一条消息
         current_last = get_last_message_text(wechat_window)
@@ -147,13 +301,18 @@ def has_new_message(wechat_window, contact_name: str) -> bool:
         return False
 
 
-def _generate_llm_reply(contact_name: str, user_message: str) -> Optional[str]:
+def _generate_llm_reply(
+    contact_name: str,
+    user_message: str,
+    contact_relation: str = "",
+) -> Optional[str]:
     """
     使用大模型生成回复
 
     Args:
         contact_name: 联系人名称
         user_message: 用户发送的消息内容
+        contact_relation: 与对方的关系描述（如"男朋友"），用于个性化回复
 
     Returns:
         生成的回复文本，失败返回 None
@@ -163,8 +322,9 @@ def _generate_llm_reply(contact_name: str, user_message: str) -> Optional[str]:
     if _llm_client is None or not _llm_client.is_ready:
         return None
 
-    print(f"[LLM] 正在为 [{contact_name}] 生成回复...")
-    success, reply = _llm_client.chat(contact_name, user_message)
+    relation_hint = f" (关系: {contact_relation})" if contact_relation else ""
+    print(f"[LLM] 正在为 [{contact_name}]{relation_hint} 生成回复...")
+    success, reply = _llm_client.chat(contact_name, user_message, contact_relation)
 
     if success:
         print(f"[LLM] ✅ 生成回复成功: {reply[:50]}...")
@@ -224,16 +384,9 @@ def send_reply(
         time.sleep(0.1)
 
         # 输入回复消息
-        # 使用 SendKeys 逐行输入，处理多行消息
-        lines = message.split("\n")
-        for i, line in enumerate(lines):
-            edit.SendKeys(line)
-            if i < len(lines) - 1:
-                # 不是最后一行，按 Shift+Enter 换行
-                edit.SendKeys("{Shift}{Enter}")
-                time.sleep(0.1)
-            else:
-                time.sleep(0.1)
+        # 使用剪贴板 + Ctrl+V 方式输入，避免 uiautomation 的 SendKeys
+        # 对 {} 等特殊字符的解析 bug（string index out of range）
+        _input_via_clipboard(edit, message)
 
         time.sleep(0.2)
 
@@ -248,7 +401,9 @@ def send_reply(
         return True
 
     except Exception as e:
+        import traceback
         print(f"[回复] ❌ 发送回复失败 ({contact_name}): {e}")
+        print(f"[回复]    详细错误: {traceback.format_exc()}")
         return False
 
 
@@ -276,8 +431,16 @@ def process_auto_reply(config: Config) -> int:
     """
     执行一次自动回复检查和处理
 
-    遍历配置中的联系人，检测是否有新消息，有则自动回复。
+    采用"活跃联系人锁定"策略：
+    - 当检测到某个联系人发消息后，锁定该联系人为"活跃联系人"
+    - 持续检测该联系人的新消息并回复（对方发一条回一条）
+    - 直到其他联系人发消息，才切换到新联系人
+    - 避免多个联系人同时发消息时频繁切换窗口导致发送失败或串话
+
     优先使用大模型生成回复，失败时降级到预设消息。
+    每次会话中，对每个联系人的首次回复会先发送指定表情包/GIF。
+    支持按联系人关系个性化回复语气。
+    支持按联系人配置静默时间（silent_before）和自定义回复（custom_reply）。
 
     Args:
         config: 配置对象
@@ -285,6 +448,8 @@ def process_auto_reply(config: Config) -> int:
     Returns:
         本次处理的回复数量
     """
+    global _active_contact
+
     # 如果不在时间段内，跳过
     if not is_in_time_range(config.time_ranges):
         return 0
@@ -296,51 +461,158 @@ def process_auto_reply(config: Config) -> int:
 
     reply_count = 0
 
-    # 遍历配置中的联系人，检测新消息
-    for contact_name in config.contacts:
+    # ============================================================
+    # 第一步：如果有活跃联系人，优先检测该联系人是否有新消息
+    # ============================================================
+    if _active_contact is not None:
+        # 查找活跃联系人的配置
+        active_cfg = None
+        for c in config.contacts:
+            if c.name == _active_contact:
+                active_cfg = c
+                break
+
+        if active_cfg is not None:
+            contact_name = active_cfg.name
+            contact_relation = active_cfg.relation
+
+            # 检查是否需要回复（时间段、静默期等）
+            if (should_reply(contact_name, config)
+                    and not is_silent_now(active_cfg)
+                    and has_new_message(wechat_window, contact_name)):
+
+                # 活跃联系人发来了新消息 → 回复它，保持锁定
+                user_message = _last_messages.get(contact_name, "")
+                _handle_contact_reply(
+                    wechat_window, config, active_cfg,
+                    contact_name, contact_relation, user_message
+                )
+                reply_count += 1
+                return reply_count
+            else:
+                # 活跃联系人没有新消息 → 解锁，检查其他联系人
+                _active_contact = None
+
+    # ============================================================
+    # 第二步：检测其他联系人是否有新消息
+    # ============================================================
+    for contact_cfg in config.contacts:
+        contact_name = contact_cfg.name
+        contact_relation = contact_cfg.relation
+
+        # 跳过已经是活跃联系人的（上面已经检测过了）
+        if _active_contact == contact_name:
+            continue
+
         # 判断是否需要回复
         if not should_reply(contact_name, config):
             continue
 
+        # === 静默期检查 ===
+        if is_silent_now(contact_cfg):
+            continue
+
         # 检测是否有新消息
         if has_new_message(wechat_window, contact_name):
-            print(f"[回复] 检测到 [{contact_name}] 的新消息，准备回复")
+            # 有其他联系人发消息 → 锁定该联系人为新的活跃联系人
+            _active_contact = contact_name
+            relation_info = f" (关系: {contact_relation})" if contact_relation else ""
+            print(f"[回复] 🔒 锁定活跃联系人 [{contact_name}]{relation_info}")
 
-            # 获取对方发送的消息内容（用于大模型上下文）
+            # 获取对方发送的消息内容
             user_message = _last_messages.get(contact_name, "")
 
-            # 决定回复内容
-            reply_message = config.reply_message  # 默认使用预设消息
-            is_llm_reply = False
-
-            # 如果启用了大模型，尝试生成回复
-            if config.llm.enabled and _llm_client and _llm_client.is_ready:
-                llm_reply = _generate_llm_reply(contact_name, user_message)
-                if llm_reply:
-                    reply_message = llm_reply
-                    is_llm_reply = True
-                else:
-                    print(f"[回复] 大模型回复失败，降级到预设消息")
-
-            # 发送回复
-            success = send_reply(
-                wechat_window,
-                contact_name,
-                reply_message
+            _handle_contact_reply(
+                wechat_window, config, contact_cfg,
+                contact_name, contact_relation, user_message
             )
-
-            if success:
-                log_reply(contact_name, config.log_file, is_llm=is_llm_reply)
-                reply_count += 1
+            reply_count += 1
+            # 找到第一个有消息的联系人就锁定并返回，不再继续遍历
+            break
 
     return reply_count
 
 
+def _handle_contact_reply(
+    wechat_window,
+    config: Config,
+    contact_cfg,
+    contact_name: str,
+    contact_relation: str,
+    user_message: str,
+):
+    """
+    处理对指定联系人的回复（发送 sticker + 文字）
+
+    个性化优先级：联系人 personalization > 全局配置 > 默认值
+    个性化配置统一通过 personalization 模块读取。
+
+    Args:
+        wechat_window: 微信窗口控件
+        config: 配置对象
+        contact_cfg: 联系人配置
+        contact_name: 联系人名称
+        contact_relation: 与对方的关系
+        user_message: 对方发送的消息内容
+    """
+    relation_info = f" (关系: {contact_relation})" if contact_relation else ""
+    print(f"[回复] 检测到 [{contact_name}]{relation_info} 的新消息，准备回复")
+
+    # === 首次回复：发送表情包/GIF ===
+    # 优先使用联系人的个性化 sticker_path，没有则使用全局配置
+    contact_sticker = get_sticker_path(contact_cfg, config.sticker_path)
+    if (contact_sticker
+            and contact_name not in _first_reply_sent):
+        print(f"[回复] [{contact_name}] 首次回复，发送表情包...")
+        _send_sticker(wechat_window, contact_sticker)
+        _first_reply_sent.add(contact_name)
+        time.sleep(0.5)
+
+    # === 决定回复内容 ===
+    # 优先使用联系人的个性化 reply_message，没有则使用全局配置
+    reply_message = get_reply_message(contact_cfg, config.reply_message)
+    is_llm_reply = False
+
+    # 从 personalization 中读取 custom_reply
+    custom_reply = get_custom_reply(contact_cfg)
+
+    # 如果该联系人配置了 custom_reply 且尚未在本会话中执行过
+    # 仅首次触发时执行一次（发固定语句，不走 LLM），后续走正常 LLM 流程
+    if (custom_reply
+            and contact_name not in _custom_reply_sent):
+        reply_message = custom_reply
+        _custom_reply_sent.add(contact_name)
+        print(f"[回复] [{contact_name}] 使用自定义回复（仅首次，该轮次不调用 LLM）")
+    # 否则走 LLM 生成
+    elif config.llm.enabled and _llm_client and _llm_client.is_ready:
+        llm_reply = _generate_llm_reply(
+            contact_name, user_message, contact_relation
+        )
+        if llm_reply:
+            reply_message = llm_reply
+            is_llm_reply = True
+        else:
+            print(f"[回复] 大模型回复失败，降级到预设消息")
+
+    # 发送回复
+    success = send_reply(
+        wechat_window,
+        contact_name,
+        reply_message
+    )
+
+    if success:
+        log_reply(contact_name, config.log_file, is_llm=is_llm_reply)
+
+
 def reset_tracking():
     """重置消息追踪记录（退出时间段时调用）"""
-    global _last_messages
+    global _last_messages, _first_reply_sent, _custom_reply_sent, _active_contact
     _last_messages.clear()
+    _first_reply_sent.clear()
+    _custom_reply_sent.clear()
+    _active_contact = None
     # 同时重置 LLM 对话历史
     if _llm_client is not None:
         _llm_client.reset_conversation()
-    print("[检测] 消息追踪记录已重置")
+    print("[检测] 消息追踪记录和首次回复标记已重置")
